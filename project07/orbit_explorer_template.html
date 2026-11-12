@@ -1,0 +1,795 @@
+<title>Sentry Orbit Explorer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Space+Grotesk:wght@500;600&display=swap">
+<style>
+/* Layout: a full-bleed 3D sky. Left: mission panel (filters, legend, sources).
+   Right: dossier for the selected asteroid. Bottom: the time bar with a mission clock.
+   Deliberately single dark theme: it is a view of space. */
+:root {
+  --bg: #04060c;
+  --panel: rgba(10, 14, 25, 0.86);
+  --line: rgba(150, 170, 215, 0.17);
+  --fg: #e7eaf3;
+  --muted: #8f98ae;
+  --accent: #8fd0ff;
+  --earth: #4f9dff;
+  --warn: #ffb547;
+  --removed: #6d7486;
+  /* Palermo scale ramp (same stops the 3D view uses) */
+  --ps-10: #35507e; --ps-7: #3f93c4; --ps-5: #e6c45c; --ps-3: #f2793b; --ps-1: #ff3b5c;
+  --font-display: "Space Grotesk", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  color-scheme: dark;
+}
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body { background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 14px; line-height: 1.45; overflow: hidden; }
+#scene { position: fixed; inset: 0; }
+#scene canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+#labels { position: fixed; inset: 0; pointer-events: none; overflow: hidden; }
+.label { position: absolute; left: 0; top: 0; font: 500 11px/1 var(--font-mono); color: var(--muted); white-space: nowrap; text-shadow: 0 0 4px var(--bg), 0 0 2px var(--bg); }
+.label.planet { color: var(--fg); }
+.label.sel { color: #fff; font-size: 12px; }
+.label.hot { color: var(--ps-3); }
+
+.panel { position: absolute; background: var(--panel); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); border: 1px solid var(--line); border-radius: 10px; }
+h1, h2 { font-family: var(--font-display); font-weight: 600; letter-spacing: -0.01em; text-wrap: balance; margin: 0; }
+h1 { font-size: 20px; }
+h2 { font-size: 18px; }
+.eyebrow { font: 500 10.5px/1.2 var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+p { margin: 0; }
+a { color: var(--accent); }
+
+#left { top: calc(16px + env(safe-area-inset-top, 0px)); left: max(16px, env(safe-area-inset-left, 0px)); width: 300px; max-height: calc(100% - 170px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)); overflow: auto; }
+#left > summary { list-style: none; cursor: pointer; padding: 14px 16px 10px; display: flex; flex-direction: column; gap: 4px; }
+#left > summary::-webkit-details-marker { display: none; }
+#left > summary .toggle-hint { display: none; }
+.left-body { padding: 4px 16px 16px; display: flex; flex-direction: column; gap: 16px; }
+.field { display: flex; flex-direction: column; gap: 6px; }
+.check { display: flex; gap: 8px; align-items: center; cursor: pointer; }
+.check input { accent-color: var(--accent); width: 15px; height: 15px; margin: 0; }
+select, input[type="search"], input[type="date"] {
+  font: 14px var(--font-body); color: var(--fg); background: rgba(255,255,255,0.05);
+  border: 1px solid var(--line); border-radius: 7px; padding: 7px 9px; width: 100%; min-width: 0;
+}
+select option { background: #0b0f1a; }
+.btn { font: 500 13px var(--font-body); color: var(--fg); background: rgba(255,255,255,0.06); border: 1px solid var(--line); border-radius: 7px; padding: 7px 11px; cursor: pointer; white-space: nowrap; }
+.btn:hover { background: rgba(255,255,255,0.12); }
+.btn.primary { background: rgba(143,208,255,0.16); border-color: rgba(143,208,255,0.45); }
+.btn[aria-pressed="true"] { background: rgba(143,208,255,0.22); border-color: var(--accent); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.count { font: 12px var(--font-mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.legend-bar { height: 8px; border-radius: 4px; background: linear-gradient(90deg, var(--ps-10) 0%, var(--ps-7) 33.3%, var(--ps-5) 55.6%, var(--ps-3) 77.8%, var(--ps-1) 100%); }
+.legend-ticks { position: relative; height: 14px; font: 11px var(--font-mono); color: var(--muted); }
+.legend-ticks span { position: absolute; top: 2px; transform: translateX(-50%); }
+.legend-ticks span:first-child { transform: none; }
+.legend-ticks span:last-child { transform: translateX(-100%); }
+.swatch-row { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+.swatch { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; vertical-align: 0; }
+
+#info { top: calc(16px + env(safe-area-inset-top, 0px)); right: max(16px, env(safe-area-inset-right, 0px)); width: 330px; max-height: calc(100% - 170px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)); overflow: auto; padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+.info-head { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
+.info-head > div { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.chip { align-self: flex-start; font: 500 11px var(--font-mono); padding: 3px 8px; border-radius: 999px; border: 1px solid currentColor; }
+.chip.listed { color: var(--ps-3); }
+.chip.removed { color: var(--muted); }
+.close { font-size: 18px; line-height: 1; padding: 4px 9px; }
+dl.facts { display: grid; grid-template-columns: 1fr; gap: 2px; margin: 0; }
+dl.facts dt { color: var(--muted); font-size: 12px; }
+dl.facts dt:not(:first-child) { margin-top: 8px; }
+dl.facts dd { margin: 0; font: 13.5px var(--font-mono); font-variant-numeric: tabular-nums; min-width: 0; overflow-wrap: anywhere; }
+.caution { font-size: 12.5px; color: var(--warn); }
+.big-odds { font: 600 26px/1.1 var(--font-display); }
+.links { display: flex; gap: 14px; flex-wrap: wrap; font-size: 13px; }
+.story { border-top: 1px solid var(--line); padding-top: 12px; display: flex; flex-direction: column; gap: 10px; }
+.story ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; border-left: 1px solid var(--line); }
+.story li { padding-left: 12px; position: relative; font-size: 13px; }
+.story li::before { content: ""; position: absolute; left: -4px; top: 6px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+.story time { display: block; font: 500 11.5px var(--font-mono); color: var(--accent); }
+.note { font-size: 12px; color: var(--muted); }
+
+#timebar { bottom: calc(16px + env(safe-area-inset-bottom, 0px)); left: 50%; transform: translateX(-50%); width: min(820px, calc(100% - 32px)); padding: 12px 16px; display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; justify-content: space-between; }
+.clock { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.clock-date { font: 500 26px/1 var(--font-mono); font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.clock-sub { font: 12px var(--font-mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.clock-sub .warn { color: var(--warn); }
+.tb-group { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.speed { display: flex; flex-direction: column; gap: 3px; min-width: 150px; }
+.speed input { accent-color: var(--accent); width: 100%; }
+.speed-label { font: 12px var(--font-mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+#jumpDate { width: auto; }
+
+#tip { position: fixed; left: 0; top: 0; pointer-events: none; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font: 12px var(--font-mono); white-space: nowrap; }
+#loadError { position: fixed; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; }
+
+@media (max-width: 760px) {
+  #left { width: auto; right: max(16px, env(safe-area-inset-right, 0px)); max-height: 55%; }
+  #left > summary .toggle-hint { display: block; }
+  #info { top: auto; left: max(16px, env(safe-area-inset-left, 0px)); right: max(16px, env(safe-area-inset-right, 0px)); width: auto; bottom: calc(176px + env(safe-area-inset-bottom, 0px)); max-height: 42%; }
+  #timebar { padding: 10px 12px; gap: 8px 12px; }
+  .speed { min-width: 120px; }
+  #timebar { left: max(16px, env(safe-area-inset-left, 0px)); right: max(16px, env(safe-area-inset-right, 0px)); transform: none; width: auto; }
+  .clock-date { font-size: 21px; }
+}
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+</style>
+
+<div id="scene" aria-label="3D view of the inner solar system and near-Earth asteroids. Drag to rotate, scroll or pinch to zoom."></div>
+<div id="labels"></div>
+<div id="tip" hidden></div>
+
+<details id="left" class="panel" open>
+  <summary>
+    <span class="eyebrow">NASA/JPL Sentry · Earth-impact watch list</span>
+    <h1>Sentry Orbit Explorer</h1>
+    <span class="toggle-hint small muted">Tap to show or hide controls</span>
+  </summary>
+  <div class="left-body">
+    <p class="small muted">Each dot is an asteroid that JPL's Sentry system can't yet rule out hitting Earth. Drag to rotate, scroll to zoom, click a dot for details.</p>
+
+    <div class="field">
+      <label class="eyebrow" for="filter">Show</label>
+      <select id="filter">
+        <option value="moid">200 orbits closest to Earth's (MOID)</option>
+        <option value="ps">200 highest on the Palermo scale</option>
+        <option value="ip">200 highest impact probability</option>
+        <option value="all">Every listed object</option>
+      </select>
+      <span class="count" id="count"></span>
+    </div>
+
+    <div class="field">
+      <label class="check"><input type="checkbox" id="showOrbits" checked> Orbit lines</label>
+      <label class="check"><input type="checkbox" id="showLabels" checked> Label the top 5 (Palermo)</label>
+      <label class="check"><input type="checkbox" id="showRemoved"> <span>Objects removed from the list <span class="muted" id="removedCount"></span></span></label>
+    </div>
+
+    <div class="field">
+      <label class="eyebrow" for="center">Keep centered on</label>
+      <select id="center">
+        <option value="sun">The Sun</option>
+        <option value="earth">Earth</option>
+        <option value="selected">The selected asteroid</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label class="eyebrow" for="search">Find an asteroid</label>
+      <input type="search" id="search" list="names" placeholder="e.g. Bennu, 2010 RF12" autocomplete="off">
+      <datalist id="names"></datalist>
+      <button class="btn primary" id="yr4Btn" type="button">Follow the 2024 YR4 story</button>
+    </div>
+
+    <div class="field">
+      <span class="eyebrow">Color: Palermo scale (cumulative)</span>
+      <div class="legend-bar" aria-hidden="true"></div>
+      <div class="legend-ticks"><span style="left:0%">−10</span><span style="left:33.3%">−7</span><span style="left:55.6%">−5</span><span style="left:77.8%">−3</span><span style="left:100%">−1</span></div>
+      <p class="small muted">Higher means more worrying. Below 0 means less risk than the normal background rate of impacts. Every object on the list is below 0. Dot size grows with diameter, not to scale.</p>
+      <div class="swatch-row">
+        <span><span class="swatch" style="background:var(--earth)"></span>Earth</span>
+        <span><span class="swatch" style="background:var(--removed)"></span>Removed</span>
+      </div>
+    </div>
+
+    <div class="field">
+      <span class="eyebrow">About this model</span>
+      <p class="small muted">Positions use simple Kepler orbits around the Sun, ignoring planets' pull. That's good for orbit shapes and rough positions, but it can't predict close approaches, and it drifts further from reality the further you move from today. Impact odds and dates come straight from JPL.</p>
+      <p class="small muted" id="sources"></p>
+    </div>
+  </div>
+</details>
+
+<aside id="info" class="panel" hidden aria-live="polite"></aside>
+
+<div id="timebar" class="panel" role="group" aria-label="Time controls">
+  <div class="clock">
+    <span class="clock-date" id="clockDate">—</span>
+    <span class="clock-sub" id="clockSub"></span>
+  </div>
+  <div class="tb-group">
+    <button class="btn primary" id="playBtn" type="button">Pause</button>
+    <button class="btn" id="dirBtn" type="button" aria-pressed="false">Run backward</button>
+    <div class="speed">
+      <label class="speed-label" for="speed" id="speedLabel">10 days / s</label>
+      <input type="range" id="speed" min="0" max="7" step="1" value="4">
+    </div>
+  </div>
+  <div class="tb-group">
+    <input type="date" id="jumpDate" aria-label="Jump to date" min="1900-01-01" max="2199-12-31">
+    <button class="btn" id="todayBtn" type="button">Today</button>
+  </div>
+</div>
+
+<div id="loadError" hidden><p>The 3D library didn't load, so the view can't start. Check your connection and reload the page.</p></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+// The build script (build_orbit_explorer.py) replaces the next line with real JPL data.
+const DATA = /*__DATA__*/null;
+
+(function () {
+'use strict';
+if (!window.THREE || !THREE.OrbitControls || !DATA) { document.getElementById('loadError').hidden = false; return; }
+
+// ===================== Constants and date helpers =====================
+const DEG = Math.PI / 180;
+const K_GAUSS = 0.01720209895;          // Gaussian gravitational constant (radians per day, for au)
+const AU_KM = 149597870.7;               // kilometers in one astronomical unit
+const LD_KM = 384400;                    // lunar distance (Earth to Moon), km
+const J2000 = 2451545.0;                 // Julian Day of 2000-01-01 12:00
+const jdFromDate = d => d.getTime() / 86400000 + 2440587.5;
+const dateFromJd = jd => new Date((jd - 2440587.5) * 86400000);
+const JD_TODAY = jdFromDate(new Date());
+const JD_MIN = jdFromDate(new Date(Date.UTC(1900, 0, 1)));
+const JD_MAX = jdFromDate(new Date(Date.UTC(2199, 11, 31)));
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const fmtDate = d => `${String(d.getUTCDate()).padStart(2,'0')} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
+const isoDate = d => d.toISOString().slice(0, 10);
+
+// ===================== Orbit math (two-body Kepler orbits) =====================
+// Solve Kepler's equation M = E - e sin E for the eccentric anomaly E (Newton's method).
+function solveKepler(M, e) {
+  M = M % (2 * Math.PI); if (M < 0) M += 2 * Math.PI;
+  let E = e < 0.8 ? M : Math.PI;
+  for (let k = 0; k < 50; k++) {
+    const d = (E - e * Math.sin(E) - M) / (1 - e * Math.cos(E));
+    E -= d;
+    if (Math.abs(d) < 1e-12) break;
+  }
+  return E;
+}
+// Turn six orbital elements (angles in degrees) into two direction vectors P and Q
+// that place the ellipse in space (heliocentric ecliptic coordinates, au).
+function makeOrbit(a, e, i, om, w, ma, epoch) {
+  const cO = Math.cos(om * DEG), sO = Math.sin(om * DEG);
+  const cw = Math.cos(w * DEG),  sw = Math.sin(w * DEG);
+  const ci = Math.cos(i * DEG),  si = Math.sin(i * DEG);
+  return {
+    a, e, i, b: a * Math.sqrt(1 - e * e), M0: ma * DEG, epoch,
+    n: K_GAUSS / Math.pow(a, 1.5),                        // mean motion, radians per day
+    P: [cO * cw - sO * sw * ci, sO * cw + cO * sw * ci, sw * si],
+    Q: [-cO * sw - sO * cw * ci, -sO * sw + cO * cw * ci, cw * si],
+  };
+}
+// Position on the orbit at Julian Day jd, written into out[k..k+2].
+function orbitPos(o, jd, out, k) {
+  const E = solveKepler(o.M0 + o.n * (jd - o.epoch), o.e);
+  const x = o.a * (Math.cos(E) - o.e), y = o.b * Math.sin(E);
+  out[k]     = o.P[0] * x + o.Q[0] * y;
+  out[k + 1] = o.P[1] * x + o.Q[1] * y;
+  out[k + 2] = o.P[2] * x + o.Q[2] * y;
+}
+// The whole ellipse as a list of points (for drawing the orbit line).
+function orbitPath(o, nSeg) {
+  const pts = new Float32Array((nSeg + 1) * 3);
+  for (let s = 0; s <= nSeg; s++) {
+    const E = 2 * Math.PI * s / nSeg;
+    const x = o.a * (Math.cos(E) - o.e), y = o.b * Math.sin(E);
+    for (let c = 0; c < 3; c++) pts[s * 3 + c] = o.P[c] * x + o.Q[c] * y;
+  }
+  return pts;
+}
+
+// Planets: JPL "Approximate Positions of the Planets", Table 1 (valid 1800-2050).
+// Columns: a (au), e, I (deg), L mean longitude (deg), long. of perihelion (deg), long. of node (deg).
+// Second row is the change per century. "Earth" is the Earth-Moon barycenter.
+const PLANETS = [
+  { name: 'Mercury', color: 0xa9a39b, size: 6,  el: [0.38709927, 0.20563593, 7.00497902, 252.25032350, 77.45779628, 48.33076593],  rate: [0.00000037, 0.00001906, -0.00594749, 149472.67411175, 0.16047689, -0.12534081] },
+  { name: 'Venus',   color: 0xe8cf9a, size: 8,  el: [0.72333566, 0.00677672, 3.39467605, 181.97909950, 131.60246718, 76.67984255], rate: [0.00000390, -0.00004107, -0.00078890, 58517.81538729, 0.00268329, -0.27769418] },
+  { name: 'Earth',   color: 0x4f9dff, size: 9,  el: [1.00000261, 0.01671123, -0.00001531, 100.46457166, 102.93768193, 0.0],     rate: [0.00000562, -0.00004392, -0.01294668, 35999.37244981, 0.32327364, 0.0] },
+  { name: 'Mars',    color: 0xe0785a, size: 7,  el: [1.52371034, 0.09339410, 1.84969142, -4.55343205, -23.94362959, 49.55953891], rate: [0.00001847, 0.00007882, -0.00813131, 19140.30268499, 0.44441088, -0.29257343] },
+  { name: 'Jupiter', color: 0xd6b48a, size: 11, el: [5.20288700, 0.04838624, 1.30439695, 34.39644051, 14.72847983, 100.47390909], rate: [-0.00011607, -0.00013253, -0.00183714, 3034.74612775, 0.21252668, 0.20469106] },
+];
+function planetOrbit(p, jd) {
+  const T = (jd - J2000) / 36525;                         // centuries since J2000
+  const [a, e, I, L, peri, node] = p.el.map((v, k) => v + p.rate[k] * T);
+  return makeOrbit(a, e, I, node, peri - node, L - peri, jd);
+}
+
+// ===================== Load the asteroid data =====================
+const PS_STOPS = [[-10, 0x35507e], [-7, 0x3f93c4], [-5, 0xe6c45c], [-3, 0xf2793b], [-1, 0xff3b5c]];
+function psColor(ps) {
+  const c = new THREE.Color();
+  if (ps <= PS_STOPS[0][0]) return c.setHex(PS_STOPS[0][1]);
+  for (let k = 1; k < PS_STOPS.length; k++) {
+    if (ps <= PS_STOPS[k][0]) {
+      const t = (ps - PS_STOPS[k - 1][0]) / (PS_STOPS[k][0] - PS_STOPS[k - 1][0]);
+      return c.setHex(PS_STOPS[k - 1][1]).lerp(new THREE.Color(PS_STOPS[k][1]), t);
+    }
+  }
+  return c.setHex(PS_STOPS[PS_STOPS.length - 1][1]);
+}
+const REMOVED_COLOR = new THREE.Color(0x6d7486);
+
+const objects = [];
+for (const r of DATA.listed) {
+  const [des, name, a, e, i, om, w, ma, epoch, moid, ip, ps, diamKm, range, nImp, lastObs] = r;
+  const diamM = diamKm != null ? diamKm * 1000 : null;
+  objects.push({ des, name, listed: true, moid, ip, ps, diamM, range, nImp, lastObs,
+    orb: makeOrbit(a, e, i, om, w, ma, epoch), color: psColor(ps),
+    size: 2.6 + 3 * Math.log10(Math.max(diamM || 10, 1)) });
+}
+for (const r of DATA.removed) {
+  const [des, name, a, e, i, om, w, ma, epoch, moid, removed] = r;
+  objects.push({ des, name, listed: false, moid, removed,
+    orb: makeOrbit(a, e, i, om, w, ma, epoch), color: REMOVED_COLOR, size: 3 });
+}
+const N = objects.length;
+const listedIdx = objects.map((o, k) => o.listed ? k : -1).filter(k => k >= 0);
+const removedIdx = objects.map((o, k) => o.listed ? -1 : k).filter(k => k >= 0);
+const YR4 = objects.findIndex(o => o.des === '2024 YR4');
+if (YR4 >= 0) { objects[YR4].size = 6; objects[YR4].color = new THREE.Color(0x8fd0ff); }
+
+const byMoid = [...listedIdx].sort((x, y) => objects[x].moid - objects[y].moid);
+const byPs   = [...listedIdx].sort((x, y) => objects[y].ps - objects[x].ps);
+const byIp   = [...listedIdx].sort((x, y) => objects[y].ip - objects[x].ip);
+
+// ===================== Three.js scene =====================
+const host = document.getElementById('scene');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setClearColor(0x04060c, 1);
+host.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, 1, 0.0005, 2000);
+camera.up.set(0, 0, 1);                       // ecliptic north is "up"
+camera.position.set(0.6, -3.6, 2.4);
+const controls = new THREE.OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.dampingFactor = 0.08;
+controls.minDistance = 0.01; controls.maxDistance = 60;
+
+// Round, soft dots whose size we control per object.
+function dotMaterial(ring) {
+  return new THREE.ShaderMaterial({
+    uniforms: { uScale: { value: renderer.getPixelRatio() } },
+    vertexShader: `
+      attribute float aSize; attribute vec3 aColor; varying vec3 vColor;
+      uniform float uScale;
+      void main() {
+        vColor = aColor;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = aSize * uScale * clamp(3.0 / -mv.z, 0.75, 2.0);
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: ring ? `
+      varying vec3 vColor;
+      void main() { float d = length(gl_PointCoord - 0.5); if (d > 0.5 || d < 0.36) discard; gl_FragColor = vec4(vColor, 1.0); }`
+    : `
+      varying vec3 vColor;
+      void main() { float d = length(gl_PointCoord - 0.5); if (d > 0.5) discard; gl_FragColor = vec4(vColor, smoothstep(0.5, 0.3, d)); }`,
+    transparent: true, depthWrite: false,
+  });
+}
+function makeDots(count) {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(count * 3), 3));
+  g.setAttribute('aColor', new THREE.BufferAttribute(new Float32Array(count * 3), 3));
+  g.setAttribute('aSize', new THREE.BufferAttribute(new Float32Array(count), 1));
+  return g;
+}
+
+// Sun
+const sunGeo = makeDots(1);
+sunGeo.attributes.aColor.array.set([1.0, 0.82, 0.48]); sunGeo.attributes.aSize.array[0] = 16;
+scene.add(new THREE.Points(sunGeo, dotMaterial(false)));
+
+// Planets and their orbit lines (drawn with today's elements)
+const planetGeo = makeDots(PLANETS.length);
+PLANETS.forEach((p, k) => {
+  new THREE.Color(p.color).toArray(planetGeo.attributes.aColor.array, k * 3);
+  planetGeo.attributes.aSize.array[k] = p.size;
+  const path = orbitPath(planetOrbit(p, JD_TODAY), 256);
+  const lg = new THREE.BufferGeometry(); lg.setAttribute('position', new THREE.BufferAttribute(path, 3));
+  scene.add(new THREE.Line(lg, new THREE.LineBasicMaterial({ color: p.color, transparent: true, opacity: p.name === 'Earth' ? 0.65 : 0.35 })));
+});
+const planetPoints = new THREE.Points(planetGeo, dotMaterial(false)); planetPoints.renderOrder = 2;
+scene.add(planetPoints);
+const EARTH = PLANETS.findIndex(p => p.name === 'Earth');
+
+// Asteroids
+const astGeo = makeDots(N);
+objects.forEach((o, k) => o.color.toArray(astGeo.attributes.aColor.array, k * 3));
+const astPoints = new THREE.Points(astGeo, dotMaterial(false)); astPoints.renderOrder = 1;
+astPoints.frustumCulled = false;
+scene.add(astPoints);
+const astPos = astGeo.attributes.position.array;
+
+// Orbit lines for the shown asteroids (one combined geometry, rebuilt when the filter changes)
+const SEG = 96;
+const pathCache = new Map();
+const getPath = k => { if (!pathCache.has(k)) pathCache.set(k, orbitPath(objects[k].orb, SEG)); return pathCache.get(k); };
+const orbitLines = new THREE.LineSegments(new THREE.BufferGeometry(),
+  new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.2, depthWrite: false }));
+orbitLines.frustumCulled = false;
+scene.add(orbitLines);
+
+// Selection: highlighted orbit, ring marker, and a line to Earth
+const selLine = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 }));
+selLine.visible = false; scene.add(selLine);
+const ringGeo = makeDots(1); ringGeo.attributes.aColor.array.set([1, 1, 1]); ringGeo.attributes.aSize.array[0] = 22;
+const ring = new THREE.Points(ringGeo, dotMaterial(true)); ring.visible = false; ring.renderOrder = 3; scene.add(ring);
+const tetherGeo = new THREE.BufferGeometry(); tetherGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
+const tether = new THREE.Line(tetherGeo, new THREE.LineBasicMaterial({ color: 0xffb547, transparent: true, opacity: 0.55 }));
+tether.visible = false; tether.frustumCulled = false; scene.add(tether);
+
+// ===================== State =====================
+const SPEEDS = [0.1, 0.5, 1, 3, 10, 30, 100, 365];       // days of simulated time per real second
+const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+const state = { jd: JD_TODAY, playing: !reduceMotion, dir: 1, speed: 4, filter: 'moid',
+  showOrbits: true, showLabels: true, showRemoved: false, center: 'sun', selected: -1 };
+const visible = new Uint8Array(N);
+let shownListed = [];
+const earthPos = new Float32Array(3);
+const planetPos = planetGeo.attributes.position.array;
+
+function applyFilter() {
+  const lists = { moid: byMoid.slice(0, 200), ps: byPs.slice(0, 200), ip: byIp.slice(0, 200), all: listedIdx };
+  shownListed = lists[state.filter];
+  visible.fill(0);
+  for (const k of shownListed) visible[k] = 1;
+  if (state.showRemoved) for (const k of removedIdx) visible[k] = 1;
+  if (YR4 >= 0) visible[YR4] = 1;
+  if (state.selected >= 0) visible[state.selected] = 1;
+  const sizes = astGeo.attributes.aSize.array;
+  for (let k = 0; k < N; k++) sizes[k] = visible[k] ? objects[k].size : 0;
+  astGeo.attributes.aSize.needsUpdate = true;
+  rebuildOrbitLines();
+  rebuildTopLabels();
+  const shownRemoved = state.showRemoved ? removedIdx.length : 0;
+  document.getElementById('count').textContent =
+    `Showing ${shownListed.length.toLocaleString()} of ${listedIdx.length.toLocaleString()} listed` +
+    (shownRemoved ? ` + ${shownRemoved.toLocaleString()} removed` : '');
+}
+function rebuildOrbitLines() {
+  const list = state.showOrbits ? shownListed : [];
+  const pos = new Float32Array(list.length * SEG * 6), col = new Float32Array(list.length * SEG * 6);
+  let v = 0;
+  for (const k of list) {
+    const p = getPath(k), c = objects[k].color;
+    for (let s = 0; s < SEG; s++) {
+      for (let end = 0; end < 2; end++) {
+        const src = (s + end) * 3;
+        pos[v] = p[src]; pos[v + 1] = p[src + 1]; pos[v + 2] = p[src + 2];
+        col[v] = c.r; col[v + 1] = c.g; col[v + 2] = c.b; v += 3;
+      }
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  orbitLines.geometry.dispose(); orbitLines.geometry = g;
+}
+
+// ===================== Labels (HTML text that follows 3D points) =====================
+const labelLayer = document.getElementById('labels');
+function makeLabel(text, cls) { const el = document.createElement('div'); el.className = 'label ' + cls; el.textContent = text; labelLayer.appendChild(el); return el; }
+const sunLabel = makeLabel('Sun', 'planet');
+const planetLabels = PLANETS.map(p => makeLabel(p.name, 'planet'));
+const selLabel = makeLabel('', 'sel'); selLabel.hidden = true;
+const yr4Label = YR4 >= 0 ? makeLabel('2024 YR4', 'sel') : null;
+let topLabels = [];
+function rebuildTopLabels() {
+  topLabels.forEach(t => t.el.remove()); topLabels = [];
+  if (!state.showLabels) return;
+  const top = [...shownListed].sort((x, y) => objects[y].ps - objects[x].ps).slice(0, 5);
+  topLabels = top.map(k => ({ k, el: makeLabel(objects[k].name, 'hot') }));
+}
+const tmpV = new THREE.Vector3();
+function placeLabel(el, x, y, z) {
+  tmpV.set(x, y, z).project(camera);
+  if (tmpV.z > 1 || Math.abs(tmpV.x) > 1.2 || Math.abs(tmpV.y) > 1.2) { el.style.visibility = 'hidden'; return; }
+  const w = host.clientWidth, h = host.clientHeight;
+  el.style.visibility = 'visible';
+  el.style.transform = `translate(${((tmpV.x + 1) / 2 * w + 9).toFixed(1)}px, ${((1 - tmpV.y) / 2 * h - 14).toFixed(1)}px)`;
+}
+
+// ===================== Positions for the current time =====================
+function updatePositions() {
+  PLANETS.forEach((p, k) => orbitPos(planetOrbit(p, state.jd), state.jd, planetPos, k * 3));
+  planetGeo.attributes.position.needsUpdate = true;
+  earthPos.set(planetPos.subarray(EARTH * 3, EARTH * 3 + 3));
+  for (let k = 0; k < N; k++) if (visible[k]) orbitPos(objects[k].orb, state.jd, astPos, k * 3);
+  astGeo.attributes.position.needsUpdate = true;
+}
+function distanceFromEarthAu(k) {
+  const dx = astPos[k * 3] - earthPos[0], dy = astPos[k * 3 + 1] - earthPos[1], dz = astPos[k * 3 + 2] - earthPos[2];
+  return Math.sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+// ===================== Selection and the info panel =====================
+const info = document.getElementById('info');
+const fmtAu = au => au < 0.01 ? `${(au * AU_KM / 1e3).toLocaleString(undefined, { maximumFractionDigits: 0 })} thousand km` : `${au.toFixed(3)} au (${(au * AU_KM / 1e6).toFixed(0)} million km)`;
+const fmtLd = au => `${(au * AU_KM / LD_KM).toLocaleString(undefined, { maximumFractionDigits: au * AU_KM / LD_KM < 10 ? 2 : 0 })} × Moon distance`;
+function fmtOdds(ip) {
+  const oneIn = 1 / ip;
+  const n = oneIn < 100 ? oneIn.toFixed(1) : Math.round(oneIn).toLocaleString();
+  const pct = ip * 100;
+  return { oneIn: `1 in ${n}`, pct: pct >= 0.01 ? `${pct.toPrecision(2)}%` : `${pct.toExponential(1)}%` };
+}
+function fmtSize(m) { if (m == null) return 'unknown'; return m >= 1000 ? `about ${(m / 1000).toFixed(2)} km` : `about ${Math.round(m)} m`; }
+const esc = s => String(s).replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+
+function yr4Story() {
+  return `
+  <section class="story">
+    <span class="eyebrow">The 2024 YR4 story</span>
+    <ol>
+      <li><time>27 Dec 2024</time>Discovered by the ATLAS survey telescope in Chile. It's roughly 50–60 m across, big enough to destroy a city.</li>
+      <li><time>18 Feb 2025</time>Its chance of hitting Earth on 22 Dec 2032 peaks near 3.1%, the highest ever recorded for an object this size.</li>
+      <li><time>Late Feb 2025</time>New telescope observations shrink the orbit's uncertainty, and the Earth risk drops to about 0.004%. A few-percent chance of hitting the Moon remains.</li>
+      <li><time>18 &amp; 26 Feb 2026</time>The James Webb Space Telescope finds the faint asteroid again. The updated orbit misses the Moon's center by about 22,900 km, so it won't hit the Moon.</li>
+      <li><time>05 Mar 2026</time>NASA announces the result. JPL's Sentry API lists 2024 YR4 as removed from its Earth-impact list on this date.</li>
+    </ol>
+    <p class="note">This page's simple model can't show the 2032 near miss accurately. For that, JPL uses full gravity models that include the planets.
+      Sources: <a href="https://arxiv.org/abs/2605.20498" target="_blank" rel="noopener">de Wit et al. (JWST paper)</a>,
+      <a href="https://aasnova.org/2026/05/20/asteroid-2024-yr4-wont-hit-the-moon-new-jwst-observations-show/" target="_blank" rel="noopener">AAS Nova</a>,
+      JPL Sentry API.</p>
+  </section>`;
+}
+
+function renderInfo() {
+  const k = state.selected;
+  if (k < 0) { info.hidden = true; return; }
+  const o = objects[k], orb = o.orb;
+  const dist = distanceFromEarthAu(k);
+  const periodYr = Math.pow(orb.a, 1.5);
+  const q = encodeURIComponent(o.des);
+  let html = `
+    <div class="info-head">
+      <div>
+        <span class="eyebrow">${o.listed ? 'Possible future impactor' : 'Ruled out'}</span>
+        <h2>${esc(o.name)}</h2>
+        ${o.listed ? '<span class="chip listed">On the Sentry list</span>' : `<span class="chip removed">Removed ${esc(o.removed)}</span>`}
+      </div>
+      <button class="btn close" id="closeInfo" type="button" aria-label="Close details">×</button>
+    </div>`;
+  if (o.listed) {
+    const odds = fmtOdds(o.ip);
+    html += `
+    <div>
+      <div class="big-odds">${odds.oneIn}</div>
+      <div class="small muted">chance of impact (${odds.pct}), summed over every possible date</div>
+    </div>
+    <dl class="facts">
+      <dt>Palermo scale</dt><dd>${o.ps.toFixed(2)}</dd>
+      <dt>Possible impact years</dt><dd>${esc(o.range)} (${o.nImp} ${o.nImp === 1 ? 'date' : 'dates'})</dd>
+      <dt>Estimated size</dt><dd>${fmtSize(o.diamM)}</dd>
+      <dt>Last observed</dt><dd>${esc(o.lastObs)}</dd>
+    </dl>`;
+    const yearsUnseen = (Date.now() - Date.parse(o.lastObs)) / 3.156e10;
+    if (yearsUnseen > 5) html += `<p class="caution">Not seen for ${Math.floor(yearsUnseen)} years. Its orbit is only roughly known, so its real position along this orbit is very uncertain. That uncertainty is a big part of why it's still on the list.</p>`;
+  }
+  html += `
+    <dl class="facts">
+      <dt>Orbit's closest point to Earth's orbit (MOID)</dt><dd>${fmtAu(o.moid)} (${fmtLd(o.moid)})</dd>
+      <dt>Distance from Earth on ${fmtDate(dateFromJd(state.jd))}</dt><dd id="liveDist">${fmtAu(dist)}</dd>
+      <dt>Orbit</dt><dd>${orb.a.toFixed(2)} au wide · e ${orb.e.toFixed(2)} · tilt ${orb.i.toFixed(1)}° · ${periodYr.toFixed(2)} yr per lap</dd>
+    </dl>
+    <p class="note">The distance from Earth comes from this page's simple model and is only a rough estimate.</p>
+    <div class="links">
+      ${o.listed ? `<a href="https://cneos.jpl.nasa.gov/sentry/details.html#?des=${q}" target="_blank" rel="noopener">JPL Sentry page</a>` : ''}
+      <a href="https://ssd.jpl.nasa.gov/tools/sbdb_lookup.html#/?sstr=${q}" target="_blank" rel="noopener">JPL Small-Body Database</a>
+    </div>`;
+  if (k === YR4) html += yr4Story();
+  info.innerHTML = html;
+  info.hidden = false;
+  document.getElementById('closeInfo').onclick = () => select(-1);
+}
+let lastInfoUpdate = 0;
+function updateLiveDistance(now) {
+  if (state.selected < 0 || now - lastInfoUpdate < 200) return;
+  lastInfoUpdate = now;
+  const el = document.getElementById('liveDist');
+  if (el) {
+    el.textContent = fmtAu(distanceFromEarthAu(state.selected));
+    el.previousElementSibling.textContent = `Distance from Earth on ${fmtDate(dateFromJd(state.jd))}`;
+  }
+}
+
+function select(k) {
+  state.selected = k;
+  if (k >= 0) {
+    visible[k] = 1;
+    astGeo.attributes.aSize.array[k] = objects[k].size;
+    astGeo.attributes.aSize.needsUpdate = true;
+    const p = getPath(k);
+    selLine.geometry.dispose();
+    selLine.geometry = new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(p, 3));
+    selLine.material.color.copy(objects[k].color).lerp(new THREE.Color(0xffffff), 0.35);
+    selLabel.textContent = objects[k].name;
+  } else {
+    applyFilter();                                   // hides the old selection if the filter excludes it
+  }
+  selLine.visible = ring.visible = tether.visible = k >= 0;
+  if (k >= 0 && window.matchMedia('(max-width: 760px)').matches) $('left').open = false;
+  selLabel.hidden = k < 0 || k === YR4;
+  updatePositions();
+  renderInfo();
+}
+
+// ===================== Picking (hover and click on dots) =====================
+const tip = document.getElementById('tip');
+function pick(clientX, clientY) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  const mx = clientX - rect.left, my = clientY - rect.top, w = rect.width, h = rect.height;
+  let best = -1, bestD = 14 * 14;
+  for (let k = 0; k < N; k++) {
+    if (!visible[k]) continue;
+    tmpV.set(astPos[k * 3], astPos[k * 3 + 1], astPos[k * 3 + 2]).project(camera);
+    if (tmpV.z > 1) continue;
+    const dx = (tmpV.x + 1) / 2 * w - mx, dy = (1 - tmpV.y) / 2 * h - my, d = dx * dx + dy * dy;
+    if (d < bestD) { bestD = d; best = k; }
+  }
+  return best;
+}
+let hoverQueued = null;
+renderer.domElement.addEventListener('pointermove', ev => {
+  if (ev.pointerType !== 'mouse') return;
+  hoverQueued = { x: ev.clientX, y: ev.clientY };
+});
+renderer.domElement.addEventListener('pointerleave', () => { tip.hidden = true; hoverQueued = null; });
+function processHover() {
+  if (!hoverQueued) return;
+  const { x, y } = hoverQueued; hoverQueued = null;
+  const k = pick(x, y);
+  renderer.domElement.style.cursor = k >= 0 ? 'pointer' : '';
+  if (k < 0) { tip.hidden = true; return; }
+  const o = objects[k];
+  tip.textContent = o.listed ? `${o.name} · Palermo ${o.ps.toFixed(2)} · ${fmtOdds(o.ip).oneIn}` : `${o.name} · removed ${o.removed}`;
+  tip.style.transform = `translate(${x + 14}px, ${y + 12}px)`;
+  tip.hidden = false;
+}
+let downAt = null;
+renderer.domElement.addEventListener('pointerdown', ev => { downAt = { x: ev.clientX, y: ev.clientY }; });
+renderer.domElement.addEventListener('pointerup', ev => {
+  if (!downAt) return;
+  const moved = Math.hypot(ev.clientX - downAt.x, ev.clientY - downAt.y); downAt = null;
+  if (moved > 5) return;                              // it was a drag, not a click
+  const k = pick(ev.clientX, ev.clientY);
+  if (k >= 0) select(k);
+});
+
+// ===================== Camera centering =====================
+const lastCenter = new THREE.Vector3();
+const centerNow = new THREE.Vector3();
+function updateCenter() {
+  if (state.center === 'earth') centerNow.set(earthPos[0], earthPos[1], earthPos[2]);
+  else if (state.center === 'selected' && state.selected >= 0) { const k = state.selected * 3; centerNow.set(astPos[k], astPos[k + 1], astPos[k + 2]); }
+  else if (state.center === 'sun') centerNow.set(0, 0, 0);
+  else return;                                        // "selected" with nothing selected: stay put
+  const delta = centerNow.clone().sub(lastCenter);
+  camera.position.add(delta); controls.target.add(delta);
+  lastCenter.copy(centerNow);
+}
+
+// ===================== Time controls =====================
+const clockDate = document.getElementById('clockDate'), clockSub = document.getElementById('clockSub');
+const playBtn = document.getElementById('playBtn'), dirBtn = document.getElementById('dirBtn');
+const speedInput = document.getElementById('speed'), speedLabel = document.getElementById('speedLabel');
+const jumpDate = document.getElementById('jumpDate');
+function speedText() { const s = SPEEDS[state.speed]; return `${s} ${s === 1 ? 'day' : 'days'} / s`; }
+function syncControls() {
+  playBtn.textContent = state.playing ? 'Pause' : 'Play';
+  dirBtn.setAttribute('aria-pressed', String(state.dir < 0));
+  speedLabel.textContent = speedText();
+  speedInput.value = state.speed;
+}
+let lastClockText = '';
+function updateClock() {
+  const d = dateFromJd(state.jd);
+  const txt = fmtDate(d);
+  if (txt === lastClockText) return;
+  lastClockText = txt;
+  clockDate.textContent = txt;
+  const yrs = (state.jd - JD_TODAY) / 365.25;
+  const rel = Math.abs(yrs) < 0.05 ? 'today' : `${yrs > 0 ? '+' : '−'}${Math.abs(yrs).toFixed(1)} yr from today`;
+  clockSub.innerHTML = Math.abs(yrs) > 30 ? `${rel} · <span class="warn">far from today: positions are rough</span>` : rel;
+  if (document.activeElement !== jumpDate) jumpDate.value = isoDate(d);
+}
+playBtn.onclick = () => { state.playing = !state.playing; syncControls(); };
+dirBtn.onclick = () => { state.dir = -state.dir; syncControls(); };
+speedInput.oninput = () => { state.speed = Number(speedInput.value); syncControls(); };
+jumpDate.onchange = () => {
+  if (!jumpDate.value) return;
+  const jd = jdFromDate(new Date(jumpDate.value + 'T00:00:00Z'));
+  state.jd = Math.min(JD_MAX, Math.max(JD_MIN, jd));
+  lastClockText = ''; updatePositions(); renderInfo();
+};
+document.getElementById('todayBtn').onclick = () => { state.jd = JD_TODAY; lastClockText = ''; updatePositions(); renderInfo(); };
+document.addEventListener('keydown', ev => {
+  if (ev.target.closest('input, select, textarea, button')) return;
+  if (ev.code === 'Space') { ev.preventDefault(); state.playing = !state.playing; syncControls(); }
+  else if (ev.key === ']') { state.speed = Math.min(SPEEDS.length - 1, state.speed + 1); syncControls(); }
+  else if (ev.key === '[') { state.speed = Math.max(0, state.speed - 1); syncControls(); }
+});
+
+// ===================== Filter, search and story controls =====================
+const $ = id => document.getElementById(id);
+$('filter').onchange = e => { state.filter = e.target.value; applyFilter(); updatePositions(); };
+$('showOrbits').onchange = e => { state.showOrbits = e.target.checked; rebuildOrbitLines(); };
+$('showLabels').onchange = e => { state.showLabels = e.target.checked; rebuildTopLabels(); };
+$('showRemoved').onchange = e => { state.showRemoved = e.target.checked; applyFilter(); updatePositions(); };
+$('center').onchange = e => { state.center = e.target.value; };
+$('removedCount').textContent = `(${removedIdx.length.toLocaleString()})`;
+
+const names = $('names');
+const nameIndex = new Map();
+objects.forEach((o, k) => { nameIndex.set(o.name.toLowerCase(), k); nameIndex.set(o.des.toLowerCase(), k); });
+const frag = document.createDocumentFragment();
+[...listedIdx, ...removedIdx].forEach(k => { const opt = document.createElement('option'); opt.value = objects[k].name; frag.appendChild(opt); });
+names.appendChild(frag);
+$('search').addEventListener('change', e => {
+  const q = e.target.value.trim().toLowerCase();
+  let k = nameIndex.get(q);
+  if (k === undefined && q) k = objects.findIndex(o => o.name.toLowerCase().includes(q));
+  if (k !== undefined && k >= 0) select(k);
+});
+$('yr4Btn').onclick = () => {
+  if (YR4 < 0) return;
+  select(YR4);
+  state.center = 'sun'; $('center').value = 'sun';
+};
+$('sources').innerHTML = `Data: <a href="https://ssd-api.jpl.nasa.gov/doc/sentry.html" target="_blank" rel="noopener">NASA/JPL CNEOS Sentry API</a> and
+  <a href="https://ssd-api.jpl.nasa.gov/doc/sbdb_query.html" target="_blank" rel="noopener">JPL Small-Body Database</a>, downloaded ${esc(DATA.downloaded)}.
+  Planets: <a href="https://ssd.jpl.nasa.gov/planets/approx_pos.html" target="_blank" rel="noopener">JPL approximate planet positions</a>.
+  ${removedIdx.length.toLocaleString()} of ${DATA.removed_total.toLocaleString()} removed objects have near-Earth orbits on file and are shown.`;
+
+// ===================== Main loop =====================
+function resize() {
+  const w = host.clientWidth, h = host.clientHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h; camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', resize);
+if (window.matchMedia('(max-width: 760px)').matches) $('left').open = false;
+
+let lastT = performance.now();
+function frame(t) {
+  const dt = Math.min(0.1, (t - lastT) / 1000); lastT = t;
+  if (state.playing) {
+    state.jd += state.dir * SPEEDS[state.speed] * dt;
+    if (state.jd > JD_MAX || state.jd < JD_MIN) { state.jd = Math.min(JD_MAX, Math.max(JD_MIN, state.jd)); state.playing = false; syncControls(); }
+    updatePositions();
+  }
+  updateCenter();
+  controls.update();
+
+  if (state.selected >= 0) {
+    const k = state.selected * 3;
+    ringGeo.attributes.position.array.set(astPos.subarray(k, k + 3)); ringGeo.attributes.position.needsUpdate = true;
+    const tp = tetherGeo.attributes.position.array; tp.set(earthPos, 0); tp.set(astPos.subarray(k, k + 3), 3);
+    tetherGeo.attributes.position.needsUpdate = true;
+    placeLabel(selLabel, astPos[k], astPos[k + 1], astPos[k + 2]);
+  }
+  placeLabel(sunLabel, 0, 0, 0);
+  planetLabels.forEach((el, p) => placeLabel(el, planetPos[p * 3], planetPos[p * 3 + 1], planetPos[p * 3 + 2]));
+  if (yr4Label) placeLabel(yr4Label, astPos[YR4 * 3], astPos[YR4 * 3 + 1], astPos[YR4 * 3 + 2]);
+  topLabels.forEach(t => placeLabel(t.el, astPos[t.k * 3], astPos[t.k * 3 + 1], astPos[t.k * 3 + 2]));
+
+  processHover();
+  updateClock();
+  updateLiveDistance(t);
+  renderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+
+// Exposed for checking the math against JPL Horizons (not used by the page itself).
+window.__orbitExplorer = {
+  jdFromDate,
+  positionOf(des, jd) { const o = objects.find(x => x.des === des); const out = [0, 0, 0]; orbitPos(o.orb, jd, out, 0); return out; },
+  earthAt(jd) { const out = [0, 0, 0]; orbitPos(planetOrbit(PLANETS[EARTH], jd), jd, out, 0); return out; },
+};
+
+resize();
+applyFilter();
+updatePositions();
+syncControls();
+requestAnimationFrame(frame);
+})();
+</script>
